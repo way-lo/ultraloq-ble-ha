@@ -41,6 +41,7 @@ from .utecio.ble.device import UtecBleDeviceError, UtecBleNotFoundError
 from .utecio.ble.lock import UtecBleLock, build_autolock_payload, parse_autolock_hex
 from .utecio.const import DOOR_STATUS
 from .utecio.enums import DeviceBatteryLevel, DeviceLockStatus, DeviceLockWorkMode
+from .cloud import CLOUD_BATTERY, UltraloqCloudBatteryCoordinator
 from .util import async_fetch_api_devices
 
 DEVICE_ID = "device_id"
@@ -304,9 +305,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api_devices = await _async_refresh_entry_devices(hass, entry)
 
     devices = _build_ble_devices(api_devices)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {UTEC_LOCKDATA: devices}
+    cloud_battery = UltraloqCloudBatteryCoordinator(hass, entry, api_devices)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        UTEC_LOCKDATA: devices,
+        CLOUD_BATTERY: cloud_battery,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Fetch fresh percentages without blocking setup; the cloud is optional.
+    entry.async_create_background_task(
+        hass, cloud_battery.async_refresh(), "ultraloq_ble cloud battery refresh"
+    )
 
     update_listener = entry.add_update_listener(async_update_options)
     hass.data[DOMAIN][entry.entry_id][UPDATE_LISTENER] = update_listener

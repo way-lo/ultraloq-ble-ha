@@ -9,12 +9,15 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfTime
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .cloud import CLOUD_BATTERY, UltraloqCloudBatteryCoordinator
 from .const import DOMAIN, UTEC_LOCKDATA
 from .entity import UltraloqEntity
 from .utecio.ble.lock import UtecBleLock
@@ -80,7 +83,10 @@ async def async_setup_entry(
     """Set up Ultraloq sensors for a config entry."""
 
     locks: list[UtecBleLock] = hass.data[DOMAIN][entry.entry_id][UTEC_LOCKDATA]
-    entities: list[UltraloqSensor] = []
+    cloud_battery: UltraloqCloudBatteryCoordinator = hass.data[DOMAIN][
+        entry.entry_id
+    ][CLOUD_BATTERY]
+    entities: list[SensorEntity] = []
 
     for lock in locks:
         for description in SENSORS:
@@ -90,6 +96,7 @@ async def async_setup_entry(
             ):
                 continue
             entities.append(UltraloqSensor(lock, description))
+        entities.append(UltraloqCloudBatterySensor(cloud_battery, lock))
 
     async_add_entities(entities)
 
@@ -122,3 +129,36 @@ class UltraloqSensor(UltraloqEntity, SensorEntity):
             self.entity_description.key == "last_successful_communication"
             or super().available
         )
+
+
+class UltraloqCloudBatterySensor(
+    CoordinatorEntity[UltraloqCloudBatteryCoordinator], UltraloqEntity, SensorEntity
+):
+    """Battery percentage from the U-tec cloud (Bluetooth only gives a level)."""
+
+    _attr_name = "Cloud battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _listen_for_updates = False  # updates come from the coordinator, not BLE
+
+    def __init__(
+        self, coordinator: UltraloqCloudBatteryCoordinator, lock: UtecBleLock
+    ) -> None:
+        """Initialize the sensor."""
+
+        CoordinatorEntity.__init__(self, coordinator)
+        UltraloqEntity.__init__(self, lock, "cloud_battery")
+        self._key = str(lock.mac_uuid).lower()
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the last known percentage; None (unknown) when the cloud has none."""
+
+        return (self.coordinator.data or {}).get(self._key)
+
+    @property
+    def available(self) -> bool:
+        """Independent of Bluetooth; keeps the last value if a cloud poll fails."""
+
+        return self._key in (self.coordinator.data or {})
